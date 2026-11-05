@@ -1,0 +1,67 @@
+name: App iPad
+
+# Costruisce l'IPA e lo aggiunge alla pagina Releases (tag "app"):
+#   https://github.com/massxxx/sala-controllo/releases/latest/download/SalaControllo.ipa
+# L'IPA non e' firmato: si installa firmandolo con il proprio ID Apple tramite Sideloadly o AltStore.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ipad
+  cancel-in-progress: true
+
+env:
+  CAP: '6.2.0'
+
+jobs:
+  ipad:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '20'}
+      - name: Pagina del gioco
+        run: python3 build.py
+      - name: Progetto Capacitor
+        run: |
+          mkdir -p app && cd app
+          cp -r ../www www
+          echo '{"name":"sala-controllo","version":"1.0.0","private":true}' > package.json
+          echo '{"appId":"it.massxxx.salacontrollo","appName":"Sala controllo","webDir":"www"}' > capacitor.config.json
+          npm install --no-audit --no-fund @capacitor/core@$CAP @capacitor/cli@$CAP @capacitor/ios@$CAP @capacitor/app@6
+          npx cap add ios && npx cap sync ios
+      - name: Nome, orizzontale, icona, versione
+        run: |
+          cd app/ios/App
+          P=App/Info.plist
+          B=/usr/libexec/PlistBuddy
+          $B -c "Set :CFBundleDisplayName Sala controllo" $P
+          $B -c "Set :CFBundleShortVersionString 1.${{ github.run_number }}" $P || true
+          $B -c "Add :UIRequiresFullScreen bool true" $P
+          for K in UISupportedInterfaceOrientations 'UISupportedInterfaceOrientations~ipad'; do
+            $B -c "Delete :$K" $P || true
+            $B -c "Add :$K array" $P
+            $B -c "Add :$K:0 string UIInterfaceOrientationLandscapeLeft" $P
+            $B -c "Add :$K:1 string UIInterfaceOrientationLandscapeRight" $P
+          done
+          cp ../../../icone/ios-1024.png App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png
+      - name: IPA (senza firma)
+        run: |
+          cd app/ios/App
+          xcodebuild -workspace App.xcworkspace -scheme App -configuration Release -sdk iphoneos \
+            -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" CURRENT_PROJECT_VERSION=${{ github.run_number }} | tail -20
+          mkdir -p Payload && cp -R build/Build/Products/Release-iphoneos/App.app Payload/
+          zip -qry ../../../SalaControllo.ipa Payload
+          ls -la ../../../SalaControllo.ipa
+      - name: Pubblica in Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view app >/dev/null 2>&1 || gh release create app --title "Sala controllo" --notes "Scarica l'APK per Android o l'IPA per iPad. L'IPA non e' firmato: si installa con Sideloadly o AltStore." --latest
+          gh release upload app SalaControllo.ipa --clobber
