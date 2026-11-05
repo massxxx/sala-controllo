@@ -1,0 +1,71 @@
+name: App Android
+
+# Costruisce l'APK e lo mette nella pagina Releases (tag "app"):
+#   https://github.com/massxxx/sala-controllo/releases/latest/download/SalaControllo.apk
+# L'APK e' firmato sempre con la stessa chiave (android/debug.keystore),
+# cosi' le nuove versioni si installano sopra la vecchia senza perdere i dati.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: app
+  cancel-in-progress: true
+
+env:
+  CAP: '6.2.0'
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with: {distribution: temurin, java-version: '17'}
+      - uses: actions/setup-node@v4
+        with: {node-version: '20'}
+      - name: Pagina del gioco
+        run: python3 build.py
+      - name: Progetto Capacitor
+        run: |
+          mkdir -p app && cd app
+          cp -r ../www www
+          echo '{"name":"sala-controllo","version":"1.0.0","private":true}' > package.json
+          echo '{"appId":"it.massxxx.salacontrollo","appName":"Sala controllo","webDir":"www","android":{"backgroundColor":"#1c2422"}}' > capacitor.config.json
+          npm install --no-audit --no-fund @capacitor/core@$CAP @capacitor/cli@$CAP @capacitor/android@$CAP @capacitor/app@6
+          npx cap add android && npx cap sync android
+      - name: Orizzontale, icona, versione
+        run: |
+          cd app/android
+          M=app/src/main/AndroidManifest.xml
+          sed -i 's#<activity#<activity android:screenOrientation="sensorLandscape"#' $M
+          grep -q 'screenOrientation="sensorLandscape"' $M
+          rm -rf app/src/main/res/mipmap-anydpi-v26
+          for n in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+            cp ../../icone/android/$n.png app/src/main/res/mipmap-$n/ic_launcher.png
+            cp ../../icone/android/$n.png app/src/main/res/mipmap-$n/ic_launcher_round.png
+            rm -f app/src/main/res/mipmap-$n/ic_launcher_foreground.png
+          done
+          N=${{ github.run_number }}
+          sed -i "s/versionCode 1$/versionCode $N/; s/versionName \"1.0\"/versionName \"1.$N\"/" app/build.gradle
+      - name: APK
+        run: |
+          K=$GITHUB_WORKSPACE/android/debug.keystore
+          cd app/android && chmod +x gradlew && ./gradlew --no-daemon assembleRelease \
+            -Pandroid.injected.signing.store.file=$K -Pandroid.injected.signing.store.password=android \
+            -Pandroid.injected.signing.key.alias=androiddebugkey -Pandroid.injected.signing.key.password=android
+          cp app/build/outputs/apk/release/app-release.apk ../../SalaControllo.apk
+          keytool -printcert -jarfile ../../SalaControllo.apk | grep SHA256
+          ls -la ../../SalaControllo.apk
+      - name: Pubblica in Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          N="Versione 1.${{ github.run_number }}. Scarica SalaControllo.apk dal tablet e aprilo per installarlo (la prima volta Android chiede di permettere l'installazione da questa fonte). Le nuove versioni si installano sopra la vecchia e i dati restano."
+          gh release view app >/dev/null 2>&1 || gh release create app --title "Sala controllo per Android" --notes "$N" --latest
+          gh release upload app SalaControllo.apk --clobber
+          gh release edit app --notes "$N" --latest
